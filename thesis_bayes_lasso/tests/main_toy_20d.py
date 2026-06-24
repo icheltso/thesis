@@ -85,6 +85,40 @@ def running_mean(array):
 
     return running_means
 
+def exclude_nans(arr):
+    """
+    Excludes rows along the last dimension (x_part) that contain NaNs and tracks if any were removed.
+    
+    Parameters:
+        arr (numpy.ndarray): Input array of shape (no_algs, subsamp_no, x_dim, x_part).
+    
+    Returns:
+        filtered_arr (list): Nested list of NumPy arrays where NaN-containing rows in x_part are removed.
+        nan_indicator (numpy.ndarray): Array of shape (no_algs,) with 1 if NaNs were found, else 0.
+    """
+    no_algs, subsamp_no, x_dim, x_part = arr.shape
+
+    # Create a mask for valid (non-NaN) rows along the x_part dimension
+    mask = ~np.any(np.isnan(arr), axis=-1)  # Shape: (no_algs, subsamp_no, x_dim)
+
+    # Apply the mask to filter each individual sub-array
+    filtered_arr = [
+        [
+            [
+                arr[i, j, k, mask[i, j, k]]
+                for k in range(x_dim)
+            ]
+            for j in range(subsamp_no)
+        ]
+        for i in range(no_algs)
+    ]
+
+    # Create a nan indicator array (1 if any NaNs were found, otherwise 0)
+    nan_indicator = np.any(~mask, axis=(1, 2))  # Check if any row was removed per algorithm
+    nan_indicator = nan_indicator.astype(int)   # Convert boolean to integer (1 or 0)
+
+    return filtered_arr, nan_indicator
+
 def aggregate_mean_OLD(runs,phi):
     runs_shape = runs.shape
     agg_mean = []
@@ -131,25 +165,18 @@ def aggregate_mean(runs, phi):
 ##############################
 
 
-method_names = ['EULA',
-                'cart_BOB',
-                'cart_seq',
-                'cart_EM',
-                #'EULA_FB',
+method_names_main = ['PROXL1',
                 'uv_FB',
-                #'uv_Bessel',
-                #'MASCIR',
-                #'one_part_mala',
-                #'one_part_uvfb',
-                #'one_part_eula',
-                #'one_part_bessel'
-                #'one_part_gibbs',
+                'cart_BOB',
+                'cart_PEM',
                 ]
 
-no_methods = len(method_names)
-niter = 10**5
+method_names_gibbs = ['one_part_gibbs',]
+
+
+#niter = 10**5
+
 #burn_in = 10**5
-subsamp = 10
 tau_hada = 0.01
 #gamma = tau*.2
 
@@ -176,7 +203,8 @@ no_stds = 15
 m=10
 #burn_in=100
 
-M = 10**4# number of particles
+#M = 10**2# number of particles
+M = 1
 beta = 1
 
 #print('Hello World')
@@ -188,24 +216,38 @@ runs_list = []
 
 #Generate random matrix for toy problem
 # Dimensions
-n = 1
-m = 1
+n = 20
+m = 40
 
 # Desired variance
 variance = 1 / (16 * m)
 scale = jnp.sqrt(variance)
 
-# Generate the matrix
-#Amat = np.random.normal(loc=0, scale=scale, size=(m, n))
-Amat = [1]
-x0 = jnp.zeros((n,))
-x0 = x0.at[n//4].set(10)
-x0 = x0.at[n//2].set(3)
-#y = Amat@x0
-y=[3]
 
-#lam = (1/2)*jnp.max(jnp.abs(Amat.T@y))
-lam = 2.7
+
+
+# Generate the matrix
+key, subkey = random.split(key)
+Amat = random.normal(subkey, shape=(m, n)) * scale
+#Amat = np.random.normal(loc=0, scale=scale, size=(m, n)) * scale
+#Amat = jnp.array([[-0.82127389]])
+#Amat = jnp.array([[1]])
+x0 = jnp.zeros((n,))
+#x0 = x0.at[n//4].set(10)
+#x0 = x0.at[n//2].set(3)
+x0 = x0.at[0].set(10.0)
+x0 = x0.at[1].set(3.0)
+#x0 = jnp.array([-2])
+#x0 = jnp.array([3])
+y = Amat@x0
+#y=[3]
+
+true_vals = [x0[0], x0[1]]
+
+lam = (1/2)*jnp.max(jnp.abs(Amat.T@y))
+#lam = 2.7
+#lam = 0.6 * jnp.abs(Amat @ y)
+#lam = 0
 
 #parameters for prox
 Lf = np.linalg.norm(Amat)**2
@@ -216,384 +258,145 @@ tau_prox = 1 / (Lf + 1/gamma)
 #       tau_hada
 #       ]
 
-#phi = lambda x: np.linalg.norm(x,2)**2
-phi = lambda x: jnp.sum(x**2)
 
-"Run many realizations of hadamard at small stepsize to approximate true dist."
-def get_quasi_true_mean(phi_func):
-    print("Obtain quasi-mean using many iterations of Hadamard")
-    method_base = ["uv_FB"]
-    taus = [5*10**(-4)]
-    burn_in_base = 0
-    M_base = 5*10**4
-    T = 2000
-    niter_base = int(T/taus[0])
-    #niter_base = 10**4
-    subsamp_base = niter_base
-    setup_base = setup_data(jnp.array(Amat),n,lam,jnp.array(x0),jnp.array(y),M_base,gamma,beta,random.key(1))
-    runout_base = Runner(setup_base, method_base).runner(niter_base, taus, burn_in_base, subsamp_base) 
-    runout_base = runout_base[0,-1,:,:]
-    phi_run = []
-    for i in range(M_base):
-        phi_run.append(phi_func(runout_base[:,i]))
-        
-    phi_run = np.array(phi_run)
-    mean_run = np.mean(phi_run)
-    return mean_run
 
 #true_mean = get_quasi_true_mean(phi)
 
 Amat_np = np.array(Amat)
 ynp = np.array(y)
 
-"Calculate integral numerically, using integrate.nquad. For high-dim problems (even d=5), this takes a very long time."
-def get_nquad(phi_func):
-    # Define the integrand
-    def integrand(*args):
-        x = np.array(args)  # Convert positional arguments to a NumPy array
-        norm_term = np.linalg.norm(Amat_np@x - ynp, 2)**2
-        func_to_avg = phi_func(x)
-        return func_to_avg * np.exp(-beta * (lam * np.sum(np.abs(x)) + 0.5 * norm_term))
 
-    # Define integration limits for each dimension
-    bounds = [(-np.inf, np.inf) for _ in range(n)]  # Adjust bounds as needed
+tau_val = 0.01
+tau_main = [tau_val] * len(method_names_main)
+tau_gibbs = [tau_val]
 
-    # Perform integration
-    result, error = nquad(integrand, bounds)
-    
-    def integrand_for_scale(*args):
-        x = np.array(args)
-        norm_term = np.linalg.norm(Amat_np@x - ynp, 2)**2
-        return np.exp(-beta * (lam*np.sum(np.abs(x)) + 0.5 * norm_term))
-    
-    Z_out, Z_err = nquad(integrand_for_scale, bounds)
+#T_burn = 800
+#T_samp = 1000
+#burn_in = int(T_burn / tau_val)
+#niter = int(T_samp / tau_val)
+burn_in = 10**4
+niter = 10**5
+subsamp = 10
+M = 1
 
-    return result/Z_out, error, Z_err
-    
-T_burn = 10000
+setup = setup_data(jnp.array(Amat), n, lam, jnp.array(x0), jnp.array(y), M, gamma, beta, key)
 
-tau_start = np.log10(0.3)
-tau_end = np.log10(0.01)
-tau_vals = np.logspace(tau_start,tau_end,10)
+# Main methods: normal run
+runout_main, burn_time_main, sample_time_main = Runner(setup, method_names_main).runner(
+    niter, tau_main, burn_in, subsamp
+)
 
-#tau_start = np.log10(0.01)
-#tau_end = np.log10(0.01)
-#tau_vals = np.logspace(tau_start,tau_end,1)
+# Gibbs: 10x fewer iterations, no subsampling
+gibbs_niter = 10**4
+gibbs_burn_in = 10
+gibbs_subsamp = 1
 
-#tau_vals = np.array([0.0019307 , 0.001])
-burn_in_vals = T_burn / tau_vals
-setup = setup_data(jnp.array(Amat),n,lam,jnp.array(x0),jnp.array(y),M,gamma,beta,key)
-#phi = lambda x: x.T @ x
+runout_gibbs, burn_time_gibbs, sample_time_gibbs = Runner(setup, method_names_gibbs).runner(
+    gibbs_niter, tau_gibbs, gibbs_burn_in, gibbs_subsamp
+)
 
-save_xtra = os.path.join("SIMULATION","TOY","1D")
+runouts = [runout_main[0], runout_main[1], runout_main[2], runout_main[3], runout_gibbs[0]]
+plot_titles = ["Prox-L1", "Hadamard-UV", "Cartesian BOB", "Cartesian PEM", "Gibbs"]
+method_names = method_names_main + method_names_gibbs
+
+# runout shape should be: (methods, saved_iters, dim, particles)
+informative_dims = [0, 1]
+
+plt.rcParams.update({
+    "font.size": 14,
+    "axes.labelsize": 16,
+    "axes.titlesize": 16,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "legend.fontsize": 10,
+})
+
+fig, axs = plt.subplots(3, 2, figsize=(13, 11), sharey=False)
+axs = axs.ravel()
+
+plot_start = 50
+all_rm = []
+
+#plot_titles = ["Prox-L1", "Hadamard-UV", "Cartesian BOB", "Cartesian PEM", "Gibbs"]
+method_dict = {k: v for k, v in zip(method_names, plot_titles)}
+
+for k, method in enumerate(plot_titles):
+    ax = axs[k]
+
+    for dim in range(n):
+        #series = np.asarray(runout[k, :, dim, 0])
+        series = np.asarray(runouts[k][:, dim, 0])
+        rm = np.cumsum(series) / np.arange(1, len(series) + 1)
+        rm_plot = rm[plot_start:]
+        all_rm.append(rm_plot)
+
+        if dim in informative_dims:
+            ax.plot(np.arange(plot_start, len(rm)), rm_plot,
+                    linewidth=2.4, label=f"Informative dim. {dim+1}")
+        else:
+            ax.plot(np.arange(plot_start, len(rm)), rm_plot,
+                    linewidth=0.8, alpha=0.35)
+
+    #if k == 0:
+    #    ax.axhline(true_vals[0], linestyle=':', linewidth=2,
+    #               color='C0', label='True value (dim. 1)')
+    #    ax.axhline(true_vals[1], linestyle=':', linewidth=2,
+    #               color='C1', label='True value (dim. 2)')
+    #    ax.axhline(0, linestyle=':', linewidth=1.5,
+    #               color='gray', label='Zero')
+    #else:
+    #    ax.axhline(true_vals[0], linestyle=':', linewidth=2, color='C0')
+    #    ax.axhline(true_vals[1], linestyle=':', linewidth=2, color='C1')
+    #    ax.axhline(0, linestyle=':', linewidth=1.5, color='gray')
+
+    ax.set_title(method)
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Running mean")
+    if k == 0:
+        ax.legend(fontsize=10)
+
+# sane y-limits shared across running-mean panels only
+all_rm_flat = np.concatenate(all_rm)
+ymin, ymax = np.quantile(all_rm_flat, [0.005, 0.998])
+pad = 0.15 * (ymax - ymin)
+
+for ax in axs[:len(method_names)]:
+    ax.set_ylim(ymin - pad, ymax + pad)
+
+# use bottom-left as blank spacing
+#axs[4].axis("off")
+
+# ESS in bottom-right
+ax = axs[5]
+ess_vals = np.zeros((len(method_names), n))
+
+
+
+for k in range(len(method_names)):
+    for dim in range(n):
+        #print(runout.shape)
+        #print(runout[k, :, dim, 0].shape)
+        #ess_vals[k, dim] = float(az.ess(np.asarray(runout[k, :, dim, 0])))
+        #chain = np.asarray(runout[k, :, dim, 0])[None, :]  # shape: (1, draws)
+        chain = np.asarray(runouts[k][:, dim, 0])[None, :]
+        ess_vals[k, dim] = float(az.ess(chain))
+
+x = np.arange(n)
+width = 0.8 / len(method_names)
+
+for k, method in enumerate(plot_titles):
+    ax.bar(x + (k - (len(method_names)-1)/2) * width, ess_vals[k], width, label=method)
+
+ax.set_title("ESS by dimension")
+ax.set_xlabel("Dimension")
+ax.set_ylabel("ESS")
+ax.set_xticks(np.arange(0, n, 2))
+ax.set_xticklabels(np.arange(1, n+1, 2))
+ax.legend()
+
+save_xtra = os.path.join("SIMULATION","TOY","20D")
 os.makedirs(save_xtra, exist_ok=True)
 
-means = []
-
-for i in range(len(tau_vals)):
-    plt.figure()
-    ax = plt.gca()
-    
-    tau = [tau_vals[i]]
-    fin_x = []
-    sns.set()
-    sns.set_palette("husl")
-    
-    method_names = ['EULA']
-    ttl_xtra = rf"$d = {n}, tau = {tau[0]}"
-    #save_xtra = f"toy_d_{n}_tau_{tau[0]}"
-    burn_in = int(T_burn / tau_vals[i])
-    runout, burn_time, sample_time = Runner(setup, method_names).runner(niter, tau, burn_in, subsamp)
-    fin_x.append(runout[0,-1,:,:])
-    
-    #runout_eula = runout[0,:,:,:]
-    #runout_mean_eula = running_mean(runout_eula)
-    #plt.plot(runout_mean_eula)
-    #runout_hada = runout[1,:,:,:]
-    #runout_mean_hada = running_mean(runout_hada)
-    #plt.plot(runout_mean_hada)
-    print('Starting mean calc')
-    agg_means_phi = aggregate_mean(runout, phi)
-    expected_value_eula = agg_means_phi[0]
-    
-    sns.kdeplot(runout[0,-1,:,:].ravel(),color='red', label='EULA')
-
-    
-    runout = None
-    
-    method_names = ['uv_FB']
-    runout, burn_time, sample_time = Runner(setup, method_names).runner(niter, tau, burn_in, subsamp)
-    fin_x.append(runout[0,-1,:,:])
-    #runout_eula = runout[0,:,:,:]
-    #runout_mean_eula = running_mean(runout_eula)
-    #plt.plot(runout_mean_eula)
-    #runout_hada = runout[1,:,:,:]
-    #runout_mean_hada = running_mean(runout_hada)
-    #plt.plot(runout_mean_hada)
-    print('Starting mean calc')
-    agg_means_phi = aggregate_mean(runout, phi)
-    expected_value_uvfb = agg_means_phi[0]
-    
-    sns.kdeplot(runout[0,-1,:,:].ravel(),color='blue', label='uv_FB')
-    
-    
-    runout = None
-    
-    method_names = ['cart_BOB']
-    runout, burn_time, sample_time = Runner(setup, method_names).runner(niter, tau, burn_in, subsamp) 
-    fin_x.append(runout[0,-1,:,:])
-    #runout_eula = runout[0,:,:,:]
-    #runout_mean_eula = running_mean(runout_eula)
-    #plt.plot(runout_mean_eula)
-    #runout_hada = runout[1,:,:,:]
-    #runout_mean_hada = running_mean(runout_hada)
-    #plt.plot(runout_mean_hada)
-    print('Starting mean calc')
-    agg_means_phi = aggregate_mean(runout, phi)
-    expected_value_bob = agg_means_phi[0]
-    
-    sns.kdeplot(runout[0,-1,:,:].ravel(),color='green', label='Cart. BOB split')
-    
-    
-    runout = None
-    
-    method_names = ['cart_EM']
-    runout, burn_time, sample_time = Runner(setup, method_names).runner(niter, tau, burn_in, subsamp) 
-    fin_x.append(runout[0,-1,:,:])
-    #runout_eula = runout[0,:,:,:]
-    #runout_mean_eula = running_mean(runout_eula)
-    #plt.plot(runout_mean_eula)
-    #runout_hada = runout[1,:,:,:]
-    #runout_mean_hada = running_mean(runout_hada)
-    #plt.plot(runout_mean_hada)
-    print('Starting mean calc')
-    agg_means_phi = aggregate_mean(runout, phi)
-    expected_value_em = agg_means_phi[0]
-    
-    sns.kdeplot(runout[0,-1,:,:].ravel(),color='cyan', label='Cart. Euler-M')
-    
-    
-    runout = None
-    
-    method_names = ['cart_seq']
-    runout, burn_time, sample_time = Runner(setup, method_names).runner(niter, tau, burn_in, subsamp) 
-    fin_x.append(runout[0,-1,:,:])
-    #runout_eula = runout[0,:,:,:]
-    #runout_mean_eula = running_mean(runout_eula)
-    #plt.plot(runout_mean_eula)
-    #runout_hada = runout[1,:,:,:]
-    #runout_mean_hada = running_mean(runout_hada)
-    #plt.plot(runout_mean_hada)
-    print('Starting mean calc')
-    agg_means_phi = aggregate_mean(runout, phi)
-    expected_value_seq = agg_means_phi[0]
-    
-    sns.kdeplot(runout[0,-1,:,:].ravel(),color='magenta', label='Cart. Seq.')
-    runout = None
-    
-    method_names = ['cart_OBO']
-    runout, burn_time, sample_time = Runner(setup, method_names).runner(niter, tau, burn_in, subsamp) 
-    fin_x.append(runout[0,-1,:,:])
-    #runout_eula = runout[0,:,:,:]
-    #runout_mean_eula = running_mean(runout_eula)
-    #plt.plot(runout_mean_eula)
-    #runout_hada = runout[1,:,:,:]
-    #runout_mean_hada = running_mean(runout_hada)
-    #plt.plot(runout_mean_hada)
-    print('Starting mean calc')
-    agg_means_phi = aggregate_mean(runout, phi)
-    expected_value_obo = agg_means_phi[0]
-    sns.kdeplot(runout[0,-1,:,:].ravel(),color='brown', label='Cart. OBO')
-    runout = None
-    
-    method_names = ['cart_PEM']
-    runout, burn_time, sample_time = Runner(setup, method_names).runner(niter, tau, burn_in, subsamp) 
-    fin_x.append(runout[0,-1,:,:])
-    #runout_eula = runout[0,:,:,:]
-    #runout_mean_eula = running_mean(runout_eula)
-    #plt.plot(runout_mean_eula)
-    #runout_hada = runout[1,:,:,:]
-    #runout_mean_hada = running_mean(runout_hada)
-    #plt.plot(runout_mean_hada)
-    print('Starting mean calc')
-    agg_means_phi = aggregate_mean(runout, phi)
-    expected_value_pem = agg_means_phi[0]
-    sns.kdeplot(runout[0,-1,:,:].ravel(),color='gray', label='Cart. Pseudo Euler.')
-    
-    #expected_value_eula = np.mean([phi(x) for x in runout_eula])
-    #expected_value_uvfb = np.mean([phi(x) for x in runout_hada])
-    means.append([expected_value_eula,expected_value_uvfb,
-                  expected_value_bob,expected_value_em,expected_value_seq,
-                  expected_value_obo,expected_value_pem])
-    runout = None
-    
-    #you might need to adjust the plot range for the 'true' distr
-    t= np.linspace(-2,5,10000) #plot range
-    
-    save_dist_str = "1d_cart_dist_tau_" + str(i) + ".pdf"
-
-    fig_path1 = os.path.join(save_xtra,save_dist_str)
-
-    f = lambda x: np.abs(Amat[0]*x - y[0])**2/2 +lam*np.abs(x);
-    z = np.exp(-beta*f(t))
-    z = z/(np.sum(z)*(t[2]-t[1]))
-    plt.plot(t,z, 'k--',label='true')
-    plt.legend()
-    plt.savefig(fig_path1, format="pdf",bbox_inches="tight")
-    #files.download("1d_cart_dist.pdf")
-
-means_arr = np.array(means)
-
-
-#mean_phi_hada = get_quasi_true_mean(phi)
-#errs_quad = []
-#for i in range(len(tau_vals)):
-#    err_eula = np.abs(means_arr[i,0] - mean_phi_hada)
-#    err_uvfb = np.abs(means_arr[i,1] - mean_phi_hada)
-#    errs_quad.append([err_eula,err_uvfb])
-
-#errs_arr = np.array(errs_quad)
-
-filename = "loglog_plot_quasi.pdf"
-fig_path1 = os.path.join(save_xtra,filename)
-
-
-#fig_err,ax_err = plt.subplots()
-#ax_err.loglog(tau_vals,errs_arr[:,0])
-#ax_err.loglog(tau_vals,tau_vals)
-#plt.loglog(tau_vals,errs_arr[:,0],label="EULA")
-#plt.loglog(tau_vals,errs_arr[:,1],label="HADAMARD")
-#plt.loglog(tau_vals,1.5*tau_vals, label= rf"Error = k \Delta t", linestyle='--')
-#plt.legend()
-#plt.title("Log-Log Plot - longtime hadamard error")
-#plt.savefig(fig_path1, dpi=300, bbox_inches='tight')  # Save with high resolution
-#plt.show
-
-
-
-"Calculate integral numerically, using integrate.quad. For 1-D problems."
-def get_quad(phi_func):
-    # Define the integrand
-    def integrand(*args):
-        x = np.array(args)  # Convert positional arguments to a NumPy array
-        norm_term = np.linalg.norm(Amat_np@[x] - ynp, 2)**2
-        func_to_avg = phi_func(x)
-        return func_to_avg * np.exp(-beta * (lam * np.sum(np.abs(x)) + 0.5 * norm_term))
-    
-    
-    # Define integration limits for each dimension
-    #bounds = (-np.inf, np.inf)  # Adjust bounds as needed
-
-    # Perform integration
-    result, error = quad(integrand, -np.inf, np.inf)
-    
-    def integrand_for_scale(*args):
-        x = np.array(args)
-        norm_term = np.linalg.norm(Amat_np@[x] - ynp, 2)**2
-        return np.exp(-beta * (lam*np.abs(x) + 0.5 * norm_term))
-    
-    Z_out, Z_err = quad(integrand_for_scale, -np.inf, np.inf)
-
-    return result/Z_out, error, Z_err
-    
-
-mean_phi_quad = get_nquad(phi)
-errs_quad = []
-for i in range(len(tau_vals)):
-    err_eula = np.abs(means_arr[i,0] - mean_phi_quad[0])
-    err_uvfb = np.abs(means_arr[i,1] - mean_phi_quad[0])
-    err_bob = np.abs(means_arr[i,2] - mean_phi_quad[0])
-    err_em = np.abs(means_arr[i,3] - mean_phi_quad[0])
-    err_seq = np.abs(means_arr[i,4] - mean_phi_quad[0])
-    err_obo = np.abs(means_arr[i,5] - mean_phi_quad[0])
-    err_pem = np.abs(means_arr[i,6] - mean_phi_quad[0])
-    errs_quad.append([err_eula,err_uvfb,err_bob,err_em,err_seq,err_obo,err_pem])
-
-errs_arr = np.array(errs_quad)
-
-filename = "loglog_plot_quad.pdf"
-fig_path2 = os.path.join(save_xtra,filename)
-
-#fig_err,ax_err = plt.subplots()
-#ax_err.loglog(tau_vals,errs_arr[:,0])
-#ax_err.loglog(tau_vals,tau_vals)
-plt.loglog(tau_vals,errs_arr[:,0],label="EULA")
-plt.loglog(tau_vals,errs_arr[:,1],label="HADAMARD")
-plt.loglog(tau_vals,errs_arr[:,2],label="Cart. - BOB")
-plt.loglog(tau_vals,errs_arr[:,3],label="Cart. - E.M.")
-plt.loglog(tau_vals,errs_arr[:,4],label="Cart. - Seq.")
-plt.loglog(tau_vals,errs_arr[:,5],label="Cart. - OBO")
-plt.loglog(tau_vals,errs_arr[:,6],label="Cart. - Pseudo E.M.")
-plt.loglog(tau_vals,tau_vals, label= rf"Error = O(Delta t)", linestyle='--')
-plt.loglog(tau_vals,tau_vals**(1/2), label= rf"Error = O(Delta t^(0.5))", linestyle='--')
-plt.legend()
-plt.title("Log-Log Plot - quadrature error")
-plt.savefig(fig_path2, dpi=300, bbox_inches='tight')  # Save with high resolution
-plt.show
-
-
-
-
-def get_mcmc_mh(phi_func, num_samp, burnin_mc, thinning_mc):
-    def log_density(x):
-        norm_term = np.linalg.norm(Amat_np@x - ynp, 2)**2
-        return -beta * (lam * np.sum(np.abs(x)) + 0.5 * norm_term)
-
-    def metropolis_hastings(num_samples, initial_x, proposal_std, burnin_mc, thinning_mc):
-        samples = []
-        x_current = initial_x
-        for i in range(burnin_mc):
-            if i % 5000 == 0:
-                print('MCMC burn-in iteration' + str(i))
-            # Propose a new sample
-            x_proposal = x_current + np.random.normal(0, proposal_std, size=x_current.shape)
-        
-            # Compute acceptance ratio
-            log_p_current = log_density(x_current)
-            log_p_proposal = log_density(x_proposal)
-            acceptance_ratio = np.exp(log_p_proposal - log_p_current)
-        
-            # Accept or reject
-            if np.random.rand() < acceptance_ratio:
-                x_current = x_proposal
-        for i in range(num_samples):
-            if i % 5000 == 0:
-                print('MCMC iteration' + str(i))
-            # Propose a new sample
-            x_proposal = x_current + np.random.normal(0, proposal_std, size=x_current.shape)
-        
-            # Compute acceptance ratio
-            log_p_current = log_density(x_current)
-            log_p_proposal = log_density(x_proposal)
-            acceptance_ratio = np.exp(log_p_proposal - log_p_current)
-        
-            # Accept or reject
-            if np.random.rand() < acceptance_ratio:
-                x_current = x_proposal
-                
-            # Record samples dictated by thinning factor
-            if i % thinning_mc == 0:
-                samples.append(x_current)
-    
-        return np.array(samples)
-
-    # Parameters (example)
-    proposal_std = 0.1
-    initial_x = np.zeros(n)
-
-    # Running MCMC
-    samples = metropolis_hastings(num_samp, initial_x, proposal_std, burnin_mc, thinning_mc)
-    expected_value = np.mean([phi_func(x) for x in samples])
-    return expected_value
-
-
-    
-
-#for i in range(no_methods):
-#    plt.stem(jnp.mean(runout[i],axis=0))
-    
-'x_arr is a vector of last iterates of size (no. algorithms, dimension of iterate, no. particles)'
-
-
-    
-
+fig.tight_layout()
+plt.savefig(os.path.join(save_xtra, "figure_7_2_20d.pdf"), dpi=300, bbox_inches="tight")
+plt.show()
